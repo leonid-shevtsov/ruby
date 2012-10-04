@@ -3987,25 +3987,48 @@ wait(int *status)
     return waitpid(-1, status, 0);
 }
 
+/* Result encoding: UTF-16LE */
+WCHAR*
+rb_w32_wgetenv(const WCHAR* wname)
+{
+    int valueLen, resultLen;
+    WCHAR* value = NULL;
+
+    valueLen = GetEnvironmentVariableW(wname, NULL, 0);
+
+    if (valueLen == 0) {
+        errno = map_errno(GetLastError());
+   } else {
+        value = malloc(sizeof(WCHAR) * valueLen);
+
+        resultLen = GetEnvironmentVariableW(wname, value, valueLen);
+
+        if (resultLen != valueLen) {
+            errno = map_errno(GetLastError());
+            free(value);
+            value = NULL;
+        }
+   }
+
+   return value;
+}
+
 char *
 rb_w32_getenv(const char *name)
 {
-    int len = strlen(name);
-    char *env;
+    WCHAR* wname = acp_to_wstr(name, NULL);
+    WCHAR* wvalue = rb_w32_wgetenv(wname);
+    char* value = NULL;
 
-    if (len == 0) return NULL;
-    if (envarea) FreeEnvironmentStrings(envarea);
-    envarea = GetEnvironmentStrings();
-    if (!envarea) {
-	map_errno(GetLastError());
-	return NULL;
+    free(wname);
+
+    if (wvalue != NULL) {
+        /* TODO: is it correct to use ANSI encoding here and not filecp() ? */
+        value = wstr_to_acp(wvalue, NULL);
+        free(wvalue);
     }
 
-    for (env = envarea; *env; env += strlen(env) + 1)
-	if (strncasecmp(env, name, len) == 0 && *(env + len) == '=')
-	    return env + len + 1;
-
-    return NULL;
+    return value;
 }
 
 static int
@@ -4715,7 +4738,7 @@ rb_w32_asynchronize(asynchronous_func_t func, uintptr_t self,
 char **
 rb_w32_get_environ(void)
 {
-    char *envtop, *env;
+    WCHAR *envtop, *env;
     char **myenvtop, **myenv;
     int num;
 
@@ -4726,23 +4749,22 @@ rb_w32_get_environ(void)
      * CygWin deals these values by changing first `=' to '!'. But we don't
      * use such trick and follow cmd.exe's way that just doesn't show these
      * values.
-     * (U.N. 2001-11-15)
      */
-    envtop = GetEnvironmentStrings();
-    for (env = envtop, num = 0; *env; env += strlen(env) + 1)
-	if (*env != '=') num++;
+    envtop = GetEnvironmentStringsW();
+    for (env = envtop, num = 0; *env; env += lstrlenW(env) + 1)
+        if (*env != '=') num++;
 
     myenvtop = (char **)malloc(sizeof(char *) * (num + 1));
-    for (env = envtop, myenv = myenvtop; *env; env += strlen(env) + 1) {
-	if (*env != '=') {
-	    if (!(*myenv = strdup(env))) {
-		break;
-	    }
-	    myenv++;
-	}
+    for (env = envtop, myenv = myenvtop; *env; env += lstrlenW(env) + 1) {
+        if (*env != '=') {
+            if (!(*myenv = wstr_to_acp(env, NULL))) {
+                break;
+            }
+            myenv++;
+        }
     }
     *myenv = NULL;
-    FreeEnvironmentStrings(envtop);
+    FreeEnvironmentStringsW(envtop);
 
     return myenvtop;
 }
